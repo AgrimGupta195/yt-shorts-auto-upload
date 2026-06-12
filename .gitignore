@@ -1,0 +1,17 @@
+.env
+backend/.env
+backend/output/
+backend/myenv/
+backend/client_secrets.json
+backend/client_secret*.json
+backend/youtube_token.json
+.venv/
+__pycache__/
+*.pyc
+*.mp3
+*.mp4
+output.mp3
+
+# Local test artifacts
+backend/test_*
+backend/pipeline_run.log
