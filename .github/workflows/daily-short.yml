@@ -37,11 +37,7 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           UPLOAD_TO_YOUTUBE: "true"
+          CLEANUP_OUTPUT_AFTER_UPLOAD: "true"
+          EDGE_TTS_VOICE: "en-US-GuyNeural"
+          HF_IMAGE_MODEL: "black-forest-labs/FLUX.1-schnell"
         run: python run_pipeline.py
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: latest-short
-          path: backend/output/**/short.mp4
-          if-no-files-found: error
