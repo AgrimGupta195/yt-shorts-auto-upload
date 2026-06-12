@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 import time
 import urllib.parse
 from pathlib import Path
@@ -23,37 +24,67 @@ STYLE_NEGATIVE = (
 HF_FALLBACK_MODEL = "black-forest-labs/FLUX.1-schnell"
 
 
+def _is_valid_deapi_key(key: str) -> bool:
+    return key.startswith("dpn-sk-")
+
+
+def _is_valid_pollinations_key(key: str) -> bool:
+    return key.startswith("pk_") or key.startswith("sk_")
+
+
 class ImageService:
     def __init__(self):
+        self._last_pollinations_call = 0.0
+        self._disabled_providers: set[str] = set()
         self.providers = self._resolve_providers()
         if not self.providers:
             raise RuntimeError(
-                "No image provider available. Add a free key:\n"
-                "  - DEAPI_API_KEY from https://deapi.ai (free $5 credits)\n"
-                "  - POLLINATIONS_API_KEY from https://enter.pollinations.ai (free flux)\n"
-                "Or add HUGGINGFACE_API_KEY with paid Inference credits."
+                "No image provider available. Fix GitHub secrets:\n"
+                "  DEAPI_API_KEY must start with dpn-sk- (from https://deapi.ai)\n"
+                "  POLLINATIONS_API_KEY must start with pk_ or sk_ (from https://enter.pollinations.ai)"
             )
-        self._last_pollinations_call = 0.0
+        print(f"   [image] Providers: {', '.join(self.providers)}")
 
     def _resolve_providers(self) -> list[str]:
         preference = settings.image_provider.lower()
         available: list[str] = []
+
         if settings.deapi_api_key:
-            available.append("deapi")
-        if settings.pollinations_api_key or settings.image_provider == "pollinations":
-            available.append("pollinations")
+            if _is_valid_deapi_key(settings.deapi_api_key):
+                available.append("deapi")
+            else:
+                print(
+                    "   [image] Skipping deapi: invalid key format "
+                    "(expected dpn-sk-... from https://deapi.ai)"
+                )
+
+        if settings.pollinations_api_key:
+            if _is_valid_pollinations_key(settings.pollinations_api_key):
+                available.append("pollinations")
+            else:
+                print(
+                    "   [image] Skipping pollinations: invalid key format "
+                    "(expected pk_... or sk_... from https://enter.pollinations.ai)"
+                )
+
         if settings.huggingface_api_key:
             available.append("huggingface")
-        if "pollinations" not in available:
-            available.append("pollinations")
 
         if preference == "deapi":
-            return ["deapi"] if settings.deapi_api_key else []
+            return ["deapi"] if "deapi" in available else []
         if preference == "pollinations":
-            return ["pollinations"]
+            return ["pollinations"] if "pollinations" in available else []
         if preference == "huggingface":
             return ["huggingface"] if settings.huggingface_api_key else []
         return available
+
+    def _disable_provider(self, provider: str, reason: str) -> None:
+        if provider not in self._disabled_providers:
+            self._disabled_providers.add(provider)
+            print(f"   [image] Disabled {provider} for this run: {reason}")
+
+    def _active_providers(self) -> list[str]:
+        return [p for p in self.providers if p not in self._disabled_providers]
 
     def _enhance_prompt(self, prompt: str) -> str:
         return f"{prompt.strip().rstrip('.')}, {STYLE_SUFFIX}"
@@ -104,51 +135,23 @@ class ImageService:
         raise RuntimeError("deAPI returned no image data")
 
     def _generate_pollinations(self, prompt: str) -> bytes:
-        if settings.pollinations_api_key:
-            encoded = urllib.parse.quote(prompt, safe="")
-            url = (
-                f"https://gen.pollinations.ai/image/{encoded}"
-                f"?model={settings.pollinations_model}"
-                f"&width={settings.image_gen_width}"
-                f"&height={settings.image_gen_height}"
-                f"&nologo=true"
-                f"&key={settings.pollinations_api_key}"
-            )
-            response = requests.get(url, timeout=180)
-            if response.status_code == 200 and len(response.content) > 1000:
-                return response.content
-            raise RuntimeError(f"Pollinations error {response.status_code}: {response.text[:200]}")
-
-        elapsed = time.time() - self._last_pollinations_call
-        if elapsed < settings.pollinations_rate_limit_seconds:
-            time.sleep(settings.pollinations_rate_limit_seconds - elapsed)
-
         encoded = urllib.parse.quote(prompt, safe="")
         url = (
-            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"https://gen.pollinations.ai/image/{encoded}"
             f"?model={settings.pollinations_model}"
             f"&width={settings.image_gen_width}"
             f"&height={settings.image_gen_height}"
             f"&nologo=true"
+            f"&key={settings.pollinations_api_key}"
         )
         response = requests.get(url, timeout=180)
-        self._last_pollinations_call = time.time()
-
         if response.status_code == 200 and len(response.content) > 1000:
             return response.content
-
-        if response.status_code in (401, 402):
-            raise RuntimeError(
-                "Pollinations requires a free API key for CI/server use. "
-                "Sign up at https://enter.pollinations.ai and set POLLINATIONS_API_KEY."
-            )
         raise RuntimeError(f"Pollinations error {response.status_code}: {response.text[:200]}")
 
     def _format_error(self, exc: Exception) -> str:
         message = str(exc).strip()
-        if message:
-            return message
-        return f"{type(exc).__name__} (no details)"
+        return message or f"{type(exc).__name__} (no details)"
 
     def _generate_huggingface(self, prompt: str) -> bytes:
         client = InferenceClient(
@@ -171,8 +174,6 @@ class ImageService:
                 )
                 buffer = io.BytesIO()
                 image.save(buffer, format="PNG")
-                if model != settings.hf_image_model:
-                    print(f"   [image] Fallback model worked: {model}")
                 return buffer.getvalue()
             except Exception as exc:
                 last_error = exc
@@ -182,11 +183,17 @@ class ImageService:
             raise last_error
         raise RuntimeError("HuggingFace image generation failed")
 
+    def _handle_provider_failure(self, provider: str, message: str) -> None:
+        if provider == "deapi" and ("invalid_api_key" in message or "dpn-sk" in message):
+            self._disable_provider(provider, "invalid API key format (need dpn-sk-...)")
+        if provider == "huggingface" and "402" in message:
+            self._disable_provider(provider, "monthly credits exhausted")
+
     def generate_image(self, prompt: str, output_path: Path, max_retries: int = 2) -> Path:
         enhanced_prompt = self._enhance_prompt(prompt)
         errors: list[str] = []
 
-        for provider in self.providers:
+        for provider in self._active_providers():
             for attempt in range(max_retries):
                 try:
                     print(f"   [image] {provider} (attempt {attempt + 1})...")
@@ -203,11 +210,16 @@ class ImageService:
                     message = self._format_error(exc)
                     errors.append(f"{provider}: {message}")
                     print(f"   [image] {provider} failed: {message[:200]}")
+                    self._handle_provider_failure(provider, message)
+                    if provider in self._disabled_providers:
+                        break
                     if attempt + 1 < max_retries:
                         time.sleep(3 * (attempt + 1))
 
         raise RuntimeError(
             "Image generation failed:\n- "
             + "\n- ".join(errors)
-            + "\n\nFree fix for GitHub Actions: add DEAPI_API_KEY or POLLINATIONS_API_KEY to secrets."
+            + "\n\nFix GitHub secrets:\n"
+            "  DEAPI_API_KEY = dpn-sk-... from https://deapi.ai\n"
+            "  POLLINATIONS_API_KEY = sk-... from https://enter.pollinations.ai"
         )
