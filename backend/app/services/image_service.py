@@ -1,6 +1,7 @@
 import base64
 import io
 import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -27,21 +28,29 @@ class ImageService:
         self.providers = self._resolve_providers()
         if not self.providers:
             raise RuntimeError(
-                "No image provider configured. Set DEAPI_API_KEY (recommended, free at deapi.ai) "
-                "or regenerate your HuggingFace token with 'Inference Providers' permission at "
-                "https://huggingface.co/settings/tokens"
+                "No image provider available. Add a free key:\n"
+                "  - DEAPI_API_KEY from https://deapi.ai (free $5 credits)\n"
+                "  - POLLINATIONS_API_KEY from https://enter.pollinations.ai (free flux)\n"
+                "Or add HUGGINGFACE_API_KEY with paid Inference credits."
             )
+        self._last_pollinations_call = 0.0
 
     def _resolve_providers(self) -> list[str]:
         preference = settings.image_provider.lower()
         available: list[str] = []
         if settings.deapi_api_key:
             available.append("deapi")
+        if settings.pollinations_api_key or settings.image_provider == "pollinations":
+            available.append("pollinations")
         if settings.huggingface_api_key:
             available.append("huggingface")
+        if "pollinations" not in available:
+            available.append("pollinations")
 
         if preference == "deapi":
             return ["deapi"] if settings.deapi_api_key else []
+        if preference == "pollinations":
+            return ["pollinations"]
         if preference == "huggingface":
             return ["huggingface"] if settings.huggingface_api_key else []
         return available
@@ -94,11 +103,52 @@ class ImageService:
             return image_response.content
         raise RuntimeError("deAPI returned no image data")
 
+    def _generate_pollinations(self, prompt: str) -> bytes:
+        if settings.pollinations_api_key:
+            encoded = urllib.parse.quote(prompt, safe="")
+            url = (
+                f"https://gen.pollinations.ai/image/{encoded}"
+                f"?model={settings.pollinations_model}"
+                f"&width={settings.image_gen_width}"
+                f"&height={settings.image_gen_height}"
+                f"&nologo=true"
+                f"&key={settings.pollinations_api_key}"
+            )
+            response = requests.get(url, timeout=180)
+            if response.status_code == 200 and len(response.content) > 1000:
+                return response.content
+            raise RuntimeError(f"Pollinations error {response.status_code}: {response.text[:200]}")
+
+        elapsed = time.time() - self._last_pollinations_call
+        if elapsed < settings.pollinations_rate_limit_seconds:
+            time.sleep(settings.pollinations_rate_limit_seconds - elapsed)
+
+        encoded = urllib.parse.quote(prompt, safe="")
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"?model={settings.pollinations_model}"
+            f"&width={settings.image_gen_width}"
+            f"&height={settings.image_gen_height}"
+            f"&nologo=true"
+        )
+        response = requests.get(url, timeout=180)
+        self._last_pollinations_call = time.time()
+
+        if response.status_code == 200 and len(response.content) > 1000:
+            return response.content
+
+        if response.status_code in (401, 402):
+            raise RuntimeError(
+                "Pollinations requires a free API key for CI/server use. "
+                "Sign up at https://enter.pollinations.ai and set POLLINATIONS_API_KEY."
+            )
+        raise RuntimeError(f"Pollinations error {response.status_code}: {response.text[:200]}")
+
     def _format_error(self, exc: Exception) -> str:
         message = str(exc).strip()
         if message:
             return message
-        return f"{type(exc).__name__} (no details — try HF_IMAGE_MODEL={HF_FALLBACK_MODEL})"
+        return f"{type(exc).__name__} (no details)"
 
     def _generate_huggingface(self, prompt: str) -> bytes:
         client = InferenceClient(
@@ -142,6 +192,8 @@ class ImageService:
                     print(f"   [image] {provider} (attempt {attempt + 1})...")
                     if provider == "deapi":
                         data = self._generate_deapi(enhanced_prompt)
+                    elif provider == "pollinations":
+                        data = self._generate_pollinations(enhanced_prompt)
                     else:
                         data = self._generate_huggingface(enhanced_prompt)
                     result = self._save_image_bytes(data, output_path)
@@ -151,12 +203,11 @@ class ImageService:
                     message = self._format_error(exc)
                     errors.append(f"{provider}: {message}")
                     print(f"   [image] {provider} failed: {message[:200]}")
-                    if "403" in message and provider == "huggingface":
-                        errors.append(
-                            "Fix: create a new HF token with 'Inference Providers' permission "
-                            "at https://huggingface.co/settings/tokens"
-                        )
                     if attempt + 1 < max_retries:
                         time.sleep(3 * (attempt + 1))
 
-        raise RuntimeError("Image generation failed:\n- " + "\n- ".join(errors))
+        raise RuntimeError(
+            "Image generation failed:\n- "
+            + "\n- ".join(errors)
+            + "\n\nFree fix for GitHub Actions: add DEAPI_API_KEY or POLLINATIONS_API_KEY to secrets."
+        )

@@ -16,6 +16,11 @@ class Settings(BaseSettings):
 
     deapi_api_key: str = ""
     deapi_image_model: str = "Flux1schnell"
+
+    pollinations_api_key: str = ""
+    pollinations_model: str = "flux"
+    pollinations_rate_limit_seconds: float = 16.0
+
     image_provider: str = "auto"
     image_gen_width: int = 768
     image_gen_height: int = 1344
