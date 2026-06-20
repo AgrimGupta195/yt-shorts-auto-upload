@@ -6,7 +6,7 @@ from openai import OpenAI
 from app.config import settings
 from app.models import ShortScript
 
-SHORTS_SYSTEM_PROMPT = """You write scripts for viral YouTube Shorts (under 60 seconds when spoken) make new engaging stories every time.
+SHORTS_SYSTEM_PROMPT = """You write scripts for viral YouTube Shorts (under 60 seconds when spoken) make new engaging stories every time that are based on comics , manga , manhua.
 Return ONLY valid JSON with this exact structure:
 {
   "title": "catchy title under 70 chars",

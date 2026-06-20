@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -11,6 +12,10 @@ from app.config import settings
 from app.models import ShortScript
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+class YouTubeCredentialsError(RuntimeError):
+    pass
 
 
 class YouTubeService:
@@ -47,7 +52,13 @@ class YouTubeService:
             return creds
 
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as exc:
+                raise YouTubeCredentialsError(
+                    "YouTube token refresh failed. Regenerate youtube_token.json locally with "
+                    "python get_youtube_token.py or provide fresh YOUTUBE_* secrets."
+                ) from exc
             token_path.write_text(creds.to_json(), encoding="utf-8")
             return creds
 
@@ -63,7 +74,7 @@ class YouTubeService:
         token_path = Path(settings.youtube_token_file)
         creds = self._credentials_from_files() or self._credentials_from_env()
         if not creds:
-            raise RuntimeError(
+            raise YouTubeCredentialsError(
                 "YouTube credentials missing. Set YOUTUBE_CLIENT_ID, "
                 "YOUTUBE_CLIENT_SECRET, and YOUTUBE_REFRESH_TOKEN, or provide "
                 "client_secrets.json and run OAuth locally once."
@@ -71,8 +82,14 @@ class YouTubeService:
 
         if not creds.valid:
             if not creds.refresh_token:
-                raise RuntimeError("YouTube credentials are invalid and no refresh token is available.")
-            creds.refresh(Request())
+                raise YouTubeCredentialsError("YouTube credentials are invalid and no refresh token is available.")
+            try:
+                creds.refresh(Request())
+            except RefreshError as exc:
+                raise YouTubeCredentialsError(
+                    "YouTube credentials have expired or been revoked. Regenerate them locally with "
+                    "python get_youtube_token.py or update the YOUTUBE_* secrets."
+                ) from exc
             if token_path.parent.exists():
                 token_path.write_text(creds.to_json(), encoding="utf-8")
 

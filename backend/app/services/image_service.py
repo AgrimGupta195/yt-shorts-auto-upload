@@ -22,10 +22,23 @@ STYLE_NEGATIVE = (
     "low quality, deformed, text, watermark, logo, ugly"
 )
 HF_FALLBACK_MODEL = "black-forest-labs/FLUX.1-schnell"
+DEAPI_IMAGE_SIZE = "1024x1536"
+
+
+def _normalize_deapi_key(key: str) -> str:
+    key = key.strip()
+    if not key:
+        return key
+    if key.startswith("dpn-sk-"):
+        return key
+    if "|" in key:
+        return f"dpn-sk-{key}"
+    return key
 
 
 def _is_valid_deapi_key(key: str) -> bool:
-    return key.startswith("dpn-sk-")
+    normalized = _normalize_deapi_key(key)
+    return normalized.startswith("dpn-sk-") and "|" in normalized
 
 
 def _is_valid_pollinations_key(key: str) -> bool:
@@ -36,6 +49,7 @@ class ImageService:
     def __init__(self):
         self._last_pollinations_call = 0.0
         self._disabled_providers: set[str] = set()
+        self._deapi_api_key = _normalize_deapi_key(settings.deapi_api_key)
         self.providers = self._resolve_providers()
         if not self.providers:
             raise RuntimeError(
@@ -49,8 +63,8 @@ class ImageService:
         preference = settings.image_provider.lower()
         available: list[str] = []
 
-        if settings.deapi_api_key:
-            if _is_valid_deapi_key(settings.deapi_api_key):
+        if self._deapi_api_key:
+            if _is_valid_deapi_key(self._deapi_api_key):
                 available.append("deapi")
             else:
                 print(
@@ -115,14 +129,13 @@ class ImageService:
 
     def _generate_deapi(self, prompt: str) -> bytes:
         client = OpenAI(
-            api_key=settings.deapi_api_key,
+            api_key=self._deapi_api_key,
             base_url="https://oai.deapi.ai/v1",
         )
-        size = f"{settings.image_gen_width}x{settings.image_gen_height}"
         response = client.images.generate(
             model=settings.deapi_image_model,
             prompt=prompt,
-            size=size,
+            size=DEAPI_IMAGE_SIZE,
             n=1,
         )
         item = response.data[0]

@@ -10,7 +10,7 @@ from app.services.script_service import ScriptService
 from app.services.subtitle_service import subtitle_service
 from app.services.video_service import video_service
 from app.services.voiceover_service import tts_service
-from app.services.youtube_service import YouTubeService
+from app.services.youtube_service import YouTubeCredentialsError, YouTubeService
 
 
 class ShortsPipeline:
@@ -120,14 +120,18 @@ class ShortsPipeline:
         should_upload = settings.upload_to_youtube if upload is None else upload
         if should_upload:
             print("6/6 Uploading to YouTube...")
-            youtube = YouTubeService()
-            result["youtube_url"] = youtube.upload_short(final_video, script)
-            print(f"   Uploaded: {result['youtube_url']}")
+            try:
+                youtube = YouTubeService()
+                result["youtube_url"] = youtube.upload_short(final_video, script)
+                print(f"   Uploaded: {result['youtube_url']}")
 
-            if settings.cleanup_output_after_upload:
-                self._cleanup_output()
-                result["video_path"] = None
-                result["run_dir"] = None
+                if settings.cleanup_output_after_upload:
+                    self._cleanup_output()
+                    result["video_path"] = None
+                    result["run_dir"] = None
+            except YouTubeCredentialsError as exc:
+                print(f"   Skipping YouTube upload: {exc}")
+                (run_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         else:
             print("6/6 Skipping YouTube upload (upload_to_youtube=false)")
             (run_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
